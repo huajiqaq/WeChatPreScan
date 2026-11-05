@@ -1,6 +1,14 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+}
+
+/** 签名参数只放在本机 local.properties（已忽略），不进入仓库。 */
+val signingProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
 }
 
 android {
@@ -11,8 +19,20 @@ android {
         applicationId = "io.github.huajiqaq.wxprescan"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+    }
+
+    signingConfigs {
+        val storePath = signingProps.getProperty("signing.storeFile")
+        if (!storePath.isNullOrBlank() && rootProject.file(storePath).isFile) {
+            create("release") {
+                storeFile = rootProject.file(storePath)
+                storePassword = signingProps.getProperty("signing.storePassword")
+                keyAlias = signingProps.getProperty("signing.keyAlias")
+                keyPassword = signingProps.getProperty("signing.keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -23,19 +43,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
         getByName("debug") {
             isMinifyEnabled = false
-        }
-    }
-
-    splits {
-        abi {
-            isEnable = false
-            reset()
-            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-            isUniversalApk = false
         }
     }
 
@@ -71,9 +82,7 @@ android {
         val vName = versionName
         outputs.configureEach {
             val out = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            val abi = out.getFilter("ABI")
-            val suffix = if (abi.isNullOrEmpty()) "" else "_$abi"
-            out.outputFileName = "WeChatPreScan_${vName}${suffix}.apk"
+            out.outputFileName = "WeChatPreScan_${vName}.apk"
         }
     }
 }
@@ -81,4 +90,5 @@ android {
 dependencies {
     compileOnly(libs.libxposed.api)
     implementation(libs.dexkit)
+    testImplementation(libs.junit)
 }

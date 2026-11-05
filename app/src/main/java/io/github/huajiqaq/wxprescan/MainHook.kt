@@ -20,7 +20,7 @@ class MainHook : XposedModule() {
     }
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
-        if (param.packageName != HOST) return
+        if (param.packageName !in HOSTS) return
         if (!param.isFirstPackage) return
         synchronized(this) {
             if (installed) return
@@ -28,6 +28,7 @@ class MainHook : XposedModule() {
         }
 
         instance = this
+        hostPackage = param.packageName
         hostLoader = param.classLoader
         XLog.i("onPackageReady: ${param.packageName} proc=$processName")
 
@@ -40,10 +41,10 @@ class MainHook : XposedModule() {
                         val r = chain.proceed()
                         try {
                             val c = chain.getArg(0) as? Context
-                            if (c != null && c.packageName == HOST && appContext == null) {
+                            if (c != null && c.packageName == param.packageName && appContext == null) {
                                 val app = c.applicationContext ?: c
                                 appContext = app
-                                ScanBootstrap.init(this@MainHook, param.classLoader, app, processName)
+                                ScanBootstrap.init(this@MainHook, param.classLoader, app, param.packageName, processName)
                             }
                         } catch (t: Throwable) {
                             XLog.e("post-attach init fail", t)
@@ -56,28 +57,41 @@ class MainHook : XposedModule() {
         }
     }
 
-    override fun onHotReloading(param: XposedModuleInterface.HotReloadingParam): Boolean = true
+    override fun onHotReloading(param: XposedModuleInterface.HotReloadingParam): Boolean {
+        // Object[] 与宿主对象可以跨模块 ClassLoader 交接，不依赖旧模块的自定义类型。
+        param.setSavedInstanceState(arrayOf<Any?>(hostLoader, appContext, hostPackage))
+        return true
+    }
 
     override fun onHotReloaded(param: XposedModuleInterface.HotReloadedParam) {
         instance = this
+        processName = param.processName
+        val state = param.savedInstanceState as? Array<*>
+        val loader = state?.getOrNull(0) as? ClassLoader ?: hostLoader
+        val app = state?.getOrNull(1) as? Context ?: appContext
+        val host = state?.getOrNull(2) as? String ?: hostPackage
+        if (loader == null || app == null || host == null || host !in HOSTS) {
+            XLog.w("onHotReloaded: 缺少宿主状态，保留旧 Hook，需冷启动")
+            return
+        }
+
+        hostLoader = loader
+        appContext = app
+        hostPackage = host
+        installed = true
         val olds = runCatching { param.oldHookHandles }.getOrDefault(emptyList())
         XLog.i("onHotReloaded: 清理 ${olds.size} 个旧 Hook")
         olds.forEach { runCatching { it.unhook() } }
 
-        installed = false
         ScanBootstrap.reset()
-
-        val loader = hostLoader
-        val app = appContext
-        if (loader == null || app == null) {
-            XLog.w("onHotReloaded: 缺少 classLoader/appContext，等待下次冷启动")
-            return
-        }
-        ScanBootstrap.init(this, loader, app, processName)
+        ScanBootstrap.init(this, loader, app, host, processName)
     }
 
     companion object {
-        const val HOST = "com.tencent.mm"
+        const val WECHAT = "com.tencent.mm"
+        const val WECOM = "com.tencent.wework"
+
+        val HOSTS = setOf(WECHAT, WECOM)
 
         @Volatile
         var instance: MainHook? = null
@@ -92,7 +106,11 @@ class MainHook : XposedModule() {
             private set
 
         @Volatile
-        var processName: String = HOST
+        var hostPackage: String? = null
+            private set
+
+        @Volatile
+        var processName: String = ""
             private set
     }
 }
